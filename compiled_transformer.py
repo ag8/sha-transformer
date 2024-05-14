@@ -1,6 +1,6 @@
 import time
 from tqdm import tqdm
-from compiler.lib import *
+from compiler.lib_sparse import *
 
 t = time.time()
 
