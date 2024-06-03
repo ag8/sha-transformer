@@ -11,7 +11,7 @@ f = open("compiled_transformer.py", "w")
 
 g = open("constants.py", "w")
 
-f.write("import time\nfrom tqdm import tqdm\nfrom compiler.lib import *\n\nt = time.time()\n\n")
+f.write("import torch.nn as nn\nimport time\nfrom tqdm import tqdm\nfrom compiler.lib_sparse import *\n\n")
 
 # Get the main input
 input_text = ""
@@ -61,20 +61,28 @@ print(registers)
 # We need to convert this to the string `tokens = list('012')`
 
 tokens = []
+returns = ""
 
 for line in file:
     if "TOKENS" in line:
         tokens = line.split("/")[1].split("/")[0].strip().split("\\")
 
+    if line.startswith("RETURNS"):
+        returns = line.split("RETURNS")[1].strip()
+
 if len(tokens) == 0:
     raise CompilerError("No tokens found. The file must contain a line like `TOKENS = /0\1\2/`")
 
-f.write(f"tokens = {tokens}\n")
-f.write("pos = Register('pos', 2)\n")
+f.write("class CompiledTransformer(nn.Module):\n")
+f.write("    def __init__(self, *args, **kwargs):\n")
+f.write("        super().__init__(*args, **kwargs)\n")
+f.write("        self.t = time.time()\n")
+f.write(f"        self.tokens = {tokens}\n")
+f.write("        self.pos = Register('pos', 2)\n")
 
 # Create the register objects
 for register in registers:
-    f.write(f"{register} = Register('{register}', 1)\n")
+    f.write(f"        self.{register} = Register('{register}', 1)\n")
 
 num_work_registers = -1
 
@@ -88,18 +96,18 @@ if num_work_registers == -1:
 
 # Create a healthy amount of work registers
 f.write(f"""
-work_registers = []
-for i in range({num_work_registers}):
-    work_registers.append(Register(f'work_{{i}}', len(tokens)))
+        self.work_registers = []
+        for i in range({num_work_registers}):
+            self.work_registers.append(Register(f'work_{{i}}', len(self.tokens)))
 """)
 
 # Create the main embedding
 # embedding = EmbeddedState(tokens, [pos, tchaikovsky, anti_tchaikovsky, zero_register, input_copy, input_copy2, shifted, shiftedl] + work_registers)
 
-embedding_line = "embedding = EmbeddedState(tokens, [pos, "
+embedding_line = "        self.embedding = EmbeddedState(self.tokens, [self.pos, "
 for register in registers:
-    embedding_line += f"{register}, "
-embedding_line = embedding_line[:-2] + "] + work_registers)\n"
+    embedding_line += f"self.{register}, "
+embedding_line = embedding_line[:-2] + "] + self.work_registers)\n"
 
 f.write(embedding_line)
 
@@ -117,30 +125,28 @@ constant_register_values.append('1' * length)  # ones
 
 constant_register_values.extend(user_defined_constant_register_values)
 
-example_line = f"first_input = embedding.embed(embedding.tokenize('{input_text}'), ["
+first_input_line = f"        first_input = self.embedding.embed(self.embedding.tokenize(forward_input), ["
 
 for register_value in constant_register_values:
-    example_line += f"embedding.itokenize('{register_value}'), "
+    first_input_line += f"self.embedding.itokenize('{register_value}'), "
 
-example_line = example_line[:-2] + "])\n"
-
-f.write(example_line)
+first_input_line = first_input_line[:-2] + "])\n"
 
 # Now, we actually create the program
 
 func_templates = {
-    "copy": "Copy(embedding, pos, <a>, <b>)",
-    "copy_input": "ConvertToInternal(embedding, <a>)",
-    "keep_": "Keep(<a>, <b>)",
-    "rotate_": "Rotate(embedding, pos, tchaikovsky, anti_tchaikovsky, <a>, <b>, work_registers)",
-    "rotate_with_limit_": "RotateWithLimit(embedding, pos, tchaikovsky, anti_tchaikovsky, <a>, <b>, <c>, work_registers)",
-    "shiftr_": "Shift(embedding, pos, tchaikovsky, <a>, <b>, work_registers)",
-    "shiftl_": "ShiftL(embedding, pos, anti_tchaikovsky, <a>, <b>, work_registers)",
-    "xor": "XOR(embedding, pos, <a>, <b>, <c>, work_registers)",
-    "and": "AND(embedding, <a>, <b>, <c>)",
-    "not_": "NOT(embedding, pos, <a>, work_registers)",
-    "print_": "Print(embedding, <a>)",
-    "add": "Add(embedding, pos, anti_tchaikovsky, <a>, <b>, <c>, work_registers)"
+    "copy": "Copy(self.embedding, self.pos, self.<a>, self.<b>)",
+    "copy_input": "ConvertToInternal(self.embedding, self.<a>)",
+    "keep_": "Keep(self.<a>, self.<b>)",
+    "rotate_": "Rotate(self.embedding, self.pos, self.tchaikovsky, self.anti_tchaikovsky, self.<a>, <b>, self.work_registers)",
+    "rotate_with_limit_": "RotateWithLimit(self.embedding, self.pos, self.tchaikovsky, self.anti_tchaikovsky, self.<a>, <b>, <c>, self.work_registers)",
+    "shiftr_": "Shift(self.embedding, self.pos, self.tchaikovsky, self.<a>, <b>, self.work_registers)",
+    "shiftl_": "ShiftL(self.embedding, self.pos, self.anti_tchaikovsky, self.<a>, <b>, self.work_registers)",
+    "xor": "XOR(self.embedding, self.pos, self.<a>, self.<b>, self.<c>, self.work_registers)",
+    "and": "AND(self.embedding, self.<a>, self.<b>, self.<c>)",
+    "not_": "NOT(self.embedding, self.pos, self.<a>, self.work_registers)",
+    "print_": "Print(self.embedding, self.<a>)",
+    "add": "Add(self.embedding, self.pos, self.anti_tchaikovsky, self.<a>, self.<b>, self.<c>, self.work_registers)"
 }
 
 
@@ -161,11 +167,11 @@ def get_template(func_name, args):
     return template
 
 
-f.write(f"pbar = tqdm(total={len(program_lines)}, leave=False)\n")
+f.write(f"        self.pbar = tqdm(total={len(program_lines)}, leave=False)\n")
 
 real_index = 0
 for idx, line in enumerate(program_lines):
-    f.write(f"pbar.update({idx})\n")
+    f.write(f"        self.pbar.update({idx})\n")
     # First, check if there's an assignment happening.
     if "=" in line:
         # In this case, split the line into the destination and the function
@@ -189,7 +195,7 @@ for idx, line in enumerate(program_lines):
         # Write the actual function call
         template = get_template(func_name, args)
 
-        f.write(f"op_{real_index} = {template}\n")
+        f.write(f"        self.op_{real_index} = {template}\n")
         real_index += 1
     elif len(line) > 2 and not line.strip().startswith("%"):
         # Otherwise, it's an in-place operation
@@ -206,64 +212,76 @@ for idx, line in enumerate(program_lines):
             # Special case for del
             ls = "["
             for arg in args:
-                ls += arg + ", "
+                ls += "self." + arg + ", "
             ls = ls[:-2] + "]"
-            f.write(f"op_{real_index} = Clear(embedding, {ls})\n")
+            f.write(f"        self.op_{real_index} = Clear(self.embedding, {ls})\n")
         else:
             # Write the actual function call
             template = get_template(func_name, args)
 
-            f.write(f"op_{real_index} = {template}\n")
+            f.write(f"        self.op_{real_index} = {template}\n")
 
         real_index += 1
 
-f.write("pbar.close()\n")
-f.write("print('ok we done')\n")
+f.write("        self.pbar.close()\n")
+f.write("        print('ok we done')\n")
 
-all_ops_string = ",\n    ".join([f"op_{i}" for i in range(real_index)])
+all_ops_string = ",\n            ".join([f"self.op_{i}" for i in range(real_index)])
 f.write(f"""
-all_ops = [
-    {all_ops_string}
-]
+        self.all_ops = [
+            {all_ops_string}
+        ]
 """)
 f.write("""
-def count_parameters(module):
-    total_params = 0
-    for _, param in module.state_dict().items():
-        total_params += param.numel()
+        def count_parameters(module):
+            total_params = 0
+            for _, param in module.state_dict().items():
+                total_params += param.numel()
 
-    for attr_name in dir(module):
-        attr = getattr(module, attr_name)
-        if isinstance(attr, torch.nn.Module):
-            total_params += count_parameters(attr)
-        elif isinstance(attr, list):
-            for item in attr:
-                if isinstance(item, torch.nn.Module):
-                    total_params += count_parameters(item)
+            for attr_name in dir(module):
+                attr = getattr(module, attr_name)
+                if isinstance(attr, torch.nn.Module):
+                    total_params += count_parameters(attr)
+                elif isinstance(attr, list):
+                    for item in attr:
+                        if isinstance(item, torch.nn.Module):
+                            total_params += count_parameters(item)
 
-    return total_params
+            return total_params
 
-s = 0
+        self.s = 0
 
-for i, module in enumerate(all_ops):
-    total_params = count_parameters(module)
-    print(f"op_{i}: Total parameters = {total_params}")
-    s += total_params
+        for i, module in enumerate(self.all_ops):
+            total_params = count_parameters(module)
+            print(f"op_{i}: Total parameters = {total_params}")
+            self.s += total_params
 
-print(f"Total parameters: {s}")
+        print(f"Total parameters: {self.s}")
 """)
 
 f.write("""
-x = op_0.forward(first_input.unsqueeze(0))[0]
-# plot_tensor(x, embedding, 'op_0')
+        elapsed = time.time() - self.t
+        print(f"Elapsed time: {elapsed:.2f}s")
+""")
+
+f.write("""
+    def forward(self, forward_input):
+""")
+
+f.write(first_input_line)
+
+f.write("""
+        x = self.op_0.forward(first_input.unsqueeze(0))[0]
+        # plot_tensor(x, embedding, 'op_0')
 """)
 for i in range(1, real_index):
-    f.write(f"x = op_{i}.forward(x.unsqueeze(0))[0]\n")
+    f.write(f"        x = self.op_{i}.forward(x.unsqueeze(0))[0]\n")
     # f.write(f"plot_tensor(x, embedding, 'op_{i}')\n")
 
-f.write("""
-elapsed = time.time() - t
-print(f"Elapsed time: {elapsed:.2f}s")
-""")
+f.write(f"        return x[:, self.{returns}.offset:compiled_transformer.{returns}.offset + self.{returns}.size].flatten()\n")
+
+f.write("\n\n\n\n")
+f.write("compiled_transformer = CompiledTransformer()\n")
+f.write(f"print(compiled_transformer('{input_text}'))\n")
 
 f.close()
