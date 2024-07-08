@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: "If you like citing things here is a citation"
+authors:
+- family-names: "Gritsevskiy"
+  given-names: "Andrew"
+title: "SHA Transformer"
+version: 1.1
+date-released: 2024-06-03
+url: "https://github.com/ag8/sha-transformer"
